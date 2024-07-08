@@ -24,6 +24,7 @@ from oslo_config import cfg
 from oslo_utils import uuidutils
 
 from neutron_fwaas.common import fwaas_constants as constants
+from neutron_fwaas.common.exceptions import FirewallAddressGroupNotFound
 from neutron_fwaas.tests.unit.services.firewall import test_fwaas_plugin_v2
 
 
@@ -44,9 +45,15 @@ class TestFirewallDBPluginV2(test_fwaas_plugin_v2.FirewallPluginV2TestCase):
                                       as_admin=True) as fwp:
                 ctx = self._get_admin_context()
                 fwp_id = fwp['firewall_policy']['id']
-                observeds = self.db._get_policy_ordered_rules(ctx, fwp_id)
-                observed_ids = [r['id'] for r in observeds]
-                self.assertEqual(expected_ids, observed_ids)
+                observed_rules, observed_ags = self.db._get_policy_ordered_rules(ctx, fwp_id)
+                observed_rule_ids = []
+                observed_ag_ids = []
+                for r in observed_rules:
+                    observed_rule_ids.append(r['id'])
+                for r in observed_ags:
+                    observed_ag_ids.append(r['id'])
+                self.assertEqual(expected_ids, observed_rule_ids)
+                self.assertEqual([], observed_ag_ids)
 
     def test_create_firewall_policy(self):
         name = "firewall_policy1"
@@ -491,6 +498,51 @@ class TestFirewallDBPluginV2(test_fwaas_plugin_v2.FirewallPluginV2TestCase):
             for k, v in attrs.items():
                 self.assertEqual(v, firewall_rule['firewall_rule'][k])
 
+    def test_create_firewall_rule_with_source_address_group(self):
+        attrs = self._get_test_firewall_rule_attrs()
+
+        ag = {'firewall_address_group': {
+            'name': 'address_group1',
+            'description': 'source_address_group',
+            'addresses': [
+                {'address': f'{self.SOURCE_IP_ADDRESS_RAW}/32', 'ip_version': 4}
+                ]}}
+
+        address_group = self.plugin.create_firewall_address_group(
+            self._get_nonadmin_context(tenant_id=self._tenant_id), ag)
+
+        attrs['source_ip_address'] = None
+        attrs['source_address_group_ids'] = [address_group['id']]
+        attrs['as_admin'] = True
+
+        with self.firewall_rule(source_ip_address=None,
+                                source_address_group_ids=[address_group['id']],
+                                as_admin=True) as firewall_rule:
+            created_rule = firewall_rule['firewall_rule']['source_address_group_ids']
+            self.assertEqual([address_group['id']], created_rule)
+
+    def test_create_firewall_rule_with_destination_address_group(self):
+        attrs = self._get_test_firewall_rule_attrs()
+
+        ag = {'firewall_address_group': {
+            'name': 'address_group1',
+            'description': 'destination_address_group',
+            'addresses': [
+                {'address': f'{self.DESTINATION_IP_ADDRESS_RAW}/32', 'ip_version': 4}
+                ]}}
+
+        address_group = self.plugin.create_firewall_address_group(
+            self._get_nonadmin_context(tenant_id=self._tenant_id), ag)
+
+        attrs['destination_ip_address'] = None
+        attrs['destination_address_group_ids'] = [address_group['id']]
+        attrs['as_admin'] = True
+
+        with self.firewall_rule(destination_ip_address=None,
+                                destination_address_group_ids=[address_group['id']], as_admin=True) as firewall_rule:
+            created_rule = firewall_rule['firewall_rule']['destination_address_group_ids']
+            self.assertEqual([address_group['id']], created_rule)
+
     def test_create_firewall_src_port_illegal_range(self):
         attrs = self._get_test_firewall_rule_attrs()
         attrs['source_port'] = '65535:1024'
@@ -668,6 +720,70 @@ class TestFirewallDBPluginV2(test_fwaas_plugin_v2.FirewallPluginV2TestCase):
             for k, v in attrs.items():
                 self.assertEqual(v, res['firewall_rule'][k])
 
+    def test_update_firewall_rule_with_source_address_group(self):
+        attrs = self._get_test_firewall_rule_attrs()
+
+        # Create a firewall rule without a source address group
+        with self.firewall_rule(source_ip_address=None,
+                                source_address_group_ids=None,
+                                as_admin=True) as firewall_rule:
+            fwr_id = firewall_rule['firewall_rule']['id']
+
+            # Create an address group
+            ag = {'firewall_address_group': {
+                'name': 'address_group1',
+                'description': 'source_address_group',
+                'addresses': [
+                    {'address': f'{self.SOURCE_IP_ADDRESS_RAW}/32', 'ip_version': 4}
+                ]}}
+
+            address_group = self.plugin.create_firewall_address_group(
+                self._get_nonadmin_context(tenant_id=self._tenant_id), ag)
+
+            # Update the firewall rule to use the address group as its source address group
+            attrs['source_ip_address'] = None
+            attrs['source_address_group_ids'] = [address_group['id']]
+            attrs['as_admin'] = True
+            data = {'firewall_rule': {'source_ip_address': None, 'source_address_group_ids': [address_group['id']]}}
+            req = self.new_update_request('firewall_rules', data, fwr_id, as_admin=True)
+            res = self.deserialize(self.fmt, req.get_response(self.ext_api))
+
+            # Verify that the update was successful
+            updated_rule = res['firewall_rule']['source_address_group_ids']
+            self.assertEqual([address_group['id']], updated_rule)
+
+    def test_update_firewall_rule_with_destination_address_group(self):
+        attrs = self._get_test_firewall_rule_attrs()
+
+        # Create a firewall rule without a destination address group
+        with self.firewall_rule(destination_ip_address=None,
+                                destination_address_group_ids=None,
+                                as_admin=True) as firewall_rule:
+            fwr_id = firewall_rule['firewall_rule']['id']
+
+            # Create an address group
+            ag = {'firewall_address_group': {
+                'name': 'address_group1',
+                'description': 'destination_address_group',
+                'addresses': [
+                    {'address': f'{self.DESTINATION_IP_ADDRESS_RAW}/32', 'ip_version': 4}
+                ]}}
+
+            address_group = self.plugin.create_firewall_address_group(
+                self._get_nonadmin_context(tenant_id=self._tenant_id), ag)
+
+            # Update the firewall rule to use the address group as its destination address group
+            attrs['destination_ip_address'] = None
+            attrs['destination_address_group_ids'] = [address_group['id']]
+            attrs['as_admin'] = True
+            data = {'firewall_rule': {'destination_ip_address': None, 'destination_address_group_ids': [address_group['id']]}}
+            req = self.new_update_request('firewall_rules', data, fwr_id, as_admin=True)
+            res = self.deserialize(self.fmt, req.get_response(self.ext_api))
+
+            # Verify that the update was successful
+            updated_rule = res['firewall_rule']['destination_address_group_ids']
+            self.assertEqual([address_group['id']], updated_rule)
+
     def test_update_firewall_rule_with_port_and_no_proto(self):
         with self.firewall_rule(as_admin=True) as fwr:
             data = {'firewall_rule': {'protocol': None,
@@ -816,6 +932,38 @@ class TestFirewallDBPluginV2(test_fwaas_plugin_v2.FirewallPluginV2TestCase):
                               self.plugin.get_firewall_rule,
                               ctx, fwr_id)
 
+    def test_delete_firewall_rule_with_source_address_group(self):
+        with self.firewall_rule(do_delete=False, as_admin=True) as fwr:
+            fwr_id = fwr['firewall_rule']['id']
+
+            # Create an address group
+            ag = {'firewall_address_group': {
+                'name': 'address_group1',
+                'description': 'source_address_group',
+                'addresses': [
+                    {'address': f'{self.SOURCE_IP_ADDRESS_RAW}/32', 'ip_version': 4}
+                ]}}
+
+            address_group = self.plugin.create_firewall_address_group(
+                self._get_admin_context(), ag)
+
+            # Update the firewall rule to use the address group as its source address group
+            data = {'firewall_rule': {'source_ip_address': None, 'source_address_group_ids': [address_group['id']]}}
+            req = self.new_update_request('firewall_rules', data, fwr_id, as_admin=True)
+            res = req.get_response(self.ext_api)
+
+            # Delete the firewall rule
+            req = self.new_delete_request('firewall_rules', fwr_id, as_admin=True)
+            fw_res = req.get_response(self.ext_api)
+            fw_return_code = fw_res.status_int
+            self.assertEqual(204, fw_return_code)
+
+            # delete the address group
+            req = self.new_delete_request('firewall_address_groups', address_group['id'], as_admin=True)
+            ag_res = req.get_response(self.ext_api)
+            fwag_return_code = ag_res.status_int
+            self.assertEqual(204, fwag_return_code)
+
     def test_delete_firewall_rule_with_policy_associated(self):
         with self.firewall_rule(as_admin=True) as fwr:
             with self.firewall_policy(as_admin=True) as fwp:
@@ -937,25 +1085,34 @@ class TestFirewallDBPluginV2(test_fwaas_plugin_v2.FirewallPluginV2TestCase):
             'name': 'default ingress ipv4',
             'description': 'default ingress rule for IPv4',
             'ip_version': 4,
+            'source_address_group_ids': [],
             'source_ip_address': '1.2.3.4',
+            'destination_address_group_ids': [],
             'destination_ip_address': '251.252.253.254',
+
         }), dict(ingress_base, **{
             'name': 'default ingress ipv6',
             'description': 'default ingress rule for IPv6',
             'ip_version': 6,
+            'source_address_group_ids': [],
             'source_ip_address': '1:2:3:4:5:6:7:8',
+            'destination_address_group_ids': [],
             'destination_ip_address': '88:99:aa:bb:cc:dd:ee:ff',
         }), dict(egress_base, **{
             'name': 'default egress ipv4',
             'description': 'default egress rule for IPv4',
             'ip_version': 4,
+            'source_address_group_ids': [],
             'source_ip_address': '4.3.2.1',
+            'destination_address_group_ids': [],
             'destination_ip_address': '255.254.253.252',
         }), dict(egress_base, **{
             'name': 'default egress ipv6',
             'description': 'default egress rule for IPv6',
             'ip_version': 6,
+            'source_address_group_ids': [],
             'source_ip_address': '8:7:6:5:4:3:2:1',
+            'destination_address_group_ids': [],
             'destination_ip_address': 'ff:ee:dd:cc:bb:aa:99:88',
         })]
 
@@ -1813,3 +1970,71 @@ class TestFirewallDBPluginV2(test_fwaas_plugin_v2.FirewallPluginV2TestCase):
             default_fwg = self.plugin.get_firewall_group(ctx,
                                                          default_fwg['id'])
             self.assertEqual(sorted(port_ids), sorted(default_fwg['ports']))
+
+    def test_create_firewall_address_group(self):
+        ctx = self._get_nonadmin_context()
+
+        ag_dict = {
+            'firewall_address_group': {
+                'name': 'test',
+                'description': '',
+                "addresses": [
+                    {"address": "1.2.3.4/24", "ip_version": 4},
+                    {"address": "2001:0db8:0000:0000:0000:7a6e:0680:966/128", "ip_version": 6}
+                ]
+            }
+        }
+        agg = self.plugin.create_firewall_address_group(ctx, ag_dict)
+        created_ag = self.plugin.get_firewall_address_group(ctx, agg['id'])
+        self.assertEqual(agg['addresses'], created_ag['addresses'])
+
+    def test_delete_firewall_address_group(self):
+        ctx = self._get_nonadmin_context()
+
+        ag_dict = {
+            'firewall_address_group': {
+                'name': 'test',
+                'description': '',
+                "addresses": [
+                    {"address": "1.2.3.4", "ip_version": 4}
+                ]
+            }
+        }
+        agg = self.plugin.create_firewall_address_group(ctx, ag_dict)
+        self.plugin.delete_firewall_address_group(ctx, agg['id'])
+        self.assertRaises(FirewallAddressGroupNotFound,
+                          self.plugin.get_firewall_address_group,
+                          ctx, agg['id']
+                          )
+
+    def test_update_firewall_address_group(self):
+        ctx = self._get_nonadmin_context()
+
+        ag_dict = {
+            'firewall_address_group': {
+                'name': 'test',
+                'description': '',
+                "addresses": [
+                    {"address": "1.2.3.4/32", "ip_version": 4}
+                ]
+            }
+        }
+        agg = self.plugin.create_firewall_address_group(ctx, ag_dict)
+        new_ag_dict = {
+            'firewall_address_group': {
+                'name': 'test',
+                'description': 'new description',
+                "addresses": [
+                    {"address": "1.2.3.5/32", "ip_version": 4},
+                    {"address": "2001:0db8:0000:0000:0000:7a6e:0680:966/128", "ip_version": 6}
+                ]
+            }
+        }
+        new_agg = self.plugin.update_firewall_address_group(ctx, agg['id'], new_ag_dict)
+        for k, v in new_ag_dict['firewall_address_group'].items():
+            if k == 'addresses':
+                v_sorted = sorted((tuple(d.items()) for d in v))
+                new_agg_k_sorted = sorted((tuple(d.items()) for d in new_agg[k]))
+                self.assertEqual(v_sorted, new_agg_k_sorted)
+            else:
+                self.assertEqual(v, new_agg[k])

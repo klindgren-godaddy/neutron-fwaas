@@ -22,3 +22,40 @@ from neutron_fwaas._i18n import _
 class FirewallGroupPortNotSupported(n_exc.Conflict):
     message = _("Port %(port_id)s is not supported by firewall driver "
                 "'%(driver_name)s'.")
+
+
+# TODO(KGL): This should get moved to neutron-lib
+class FirewallAddressGroupNotFound(n_exc.NotFound):
+    msg = _("Firewall Address Group %(firewall_address_group_id)s could not be "
+            "found.")
+
+
+class FirewallAddressGroupInvalidAddress(n_exc.InvalidInput):
+    msg = _("Invalid address '%(ip_address)s' for address group, "
+            "needs to be a cidr.")
+
+
+class FirewallAddressGroupInvalidIpVersion(n_exc.InvalidInput):
+    msg = _("Invalid ip_version '%(ip_version)s' for address group, "
+            "needs to be either 4 or 6.")
+
+
+class FirewallAddressGroupInUse(n_exc.InUse):
+    msg = _("Address group '%(address_group_id)s' is in use by "
+            "firewall rule(s).")
+
+
+class FirewallAddressGroupIpVersionConflict(n_exc.InvalidInput):
+    message = _("Address group ip '%(ip_address)s' has conflicting "
+                "ip_version '%(ip_version)s' set.")
+
+
+class FirewallAddressGroupProjectConflict(n_exc.Conflict):
+    message = _("Address group '%(ag_id)s' is in a different "
+                "project than the firewall rule(s) using it.")
+
+
+class FirewallRuleWithAddressGroupConflict(n_exc.Conflict):
+    message = _("Firewall rule contains both an address group and "
+                "an IP address on the same direction.  Use one or "
+                "the other.")

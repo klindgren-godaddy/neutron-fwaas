@@ -38,6 +38,7 @@ from sqlalchemy import orm
 from sqlalchemy.orm import exc
 
 from neutron_fwaas.common import fwaas_constants as const
+from neutron_fwaas.common import exceptions as fwaas_exc
 
 
 LOG = logging.getLogger(__name__)
@@ -75,6 +76,14 @@ class FirewallRuleV2(standard_attr.HasStandardAttributes, model_base.BASEV2,
     ip_version = sa.Column(sa.Integer)
     source_ip_address = sa.Column(sa.String(46))
     destination_ip_address = sa.Column(sa.String(46))
+    source_address_group_ids = orm.relationship(
+         'FirewallRuleSourceAddressGroupAssociation',
+         backref=orm.backref('firewall_rules_v2'),
+         cascade='all, delete-orphan')
+    destination_address_group_ids = orm.relationship(
+         'FirewallRuleDestinationAddressGroupAssociation',
+         backref=orm.backref('firewall_rules_v2'),
+         cascade='all, delete-orphan')
     source_port_range_min = sa.Column(sa.Integer)
     source_port_range_max = sa.Column(sa.Integer)
     destination_port_range_min = sa.Column(sa.Integer)
@@ -85,6 +94,53 @@ class FirewallRuleV2(standard_attr.HasStandardAttributes, model_base.BASEV2,
     api_collections = ['firewall_rules']
     collection_resource_map = {"firewall_rules": "firewall_rule"}
     tag_support = True
+
+
+class FirewallAddressGroup(standard_attr.HasStandardAttributes, model_base.BASEV2,
+                           model_base.HasId, HasName, HasDescription,
+                           model_base.HasProject):
+    __tablename__ = 'firewall_address_groups_v2'
+    api_collections = ['firewall_address_groups']
+    collection_resource_map = {"firewall_address_groups": "firewall_address_group"}
+
+    addresses = orm.relationship('FirewallAddressGroupAddressAssociation',
+                                 backref='firewall_address_group',
+                                 cascade='all')
+
+
+class FirewallAddressGroupAddressAssociation(model_base.BASEV2, model_base.HasId):
+    __tablename__ = 'firewall_address_group_address_associations_v2'
+    firewall_address_group_id = sa.Column(
+        sa.String(db_constants.UUID_FIELD_SIZE),
+        sa.ForeignKey('firewall_address_groups_v2.id',
+                      ondelete="CASCADE"),
+        primary_key=True)
+    address = sa.Column(sa.String(46))
+    ip_version = sa.Column(sa.Integer)
+
+
+class FirewallRuleSourceAddressGroupAssociation(model_base.BASEV2, model_base.HasId):
+    __tablename__ = 'firewall_rule_source_address_group_associations_v2'
+    firewall_rule_id = sa.Column(
+        sa.String(db_constants.UUID_FIELD_SIZE),
+        sa.ForeignKey('firewall_rules_v2.id'),
+        primary_key=True)
+    address_group_id = sa.Column(
+        sa.String(db_constants.UUID_FIELD_SIZE),
+        sa.ForeignKey('firewall_address_groups_v2.id'),
+        primary_key=True)
+
+
+class FirewallRuleDestinationAddressGroupAssociation(model_base.BASEV2, model_base.HasId):
+    __tablename__ = 'firewall_rule_destination_address_group_associations_v2'
+    firewall_rule_id = sa.Column(
+        sa.String(db_constants.UUID_FIELD_SIZE),
+        sa.ForeignKey('firewall_rules_v2.id'),
+        primary_key=True)
+    address_group_id = sa.Column(
+        sa.String(db_constants.UUID_FIELD_SIZE),
+        sa.ForeignKey('firewall_address_groups_v2.id'),
+        primary_key=True)
 
 
 class FirewallGroup(standard_attr.HasStandardAttributes, model_base.BASEV2,
@@ -223,6 +279,26 @@ class FirewallPluginDb(object):
         except exc.NoResultFound:
             raise f_exc.FirewallRuleNotFound(firewall_rule_id=id)
 
+    def _validate_fwr_address_groups(self, context, fwr):
+        for addr_group_id in fwr.get('source_address_group_ids', []):
+            if fwr.get('source_ip_address'):
+                raise fwaas_exc.FirewallRuleWithAddressGroupConflict()
+            ag = self._get_firewall_address_group(context, addr_group_id)
+            if ag.project_id != fwr['tenant_id']:
+                LOG.debug("Address group %(ag)s does not belong to the "
+                          "tenant %(tenant)s",
+                          {'ag': addr_group_id, 'tenant': fwr['tenant_id']})
+                raise fwaas_exc.FirewallAddressGroupProjectConflict(ag_id=ag.project_id)
+        for addr_group_id in fwr.get('destination_address_group_ids', []):
+            if fwr.get('destination_ip_address'):
+                raise fwaas_exc.FirewallRuleWithAddressGroupConflict()
+            ag = self._get_firewall_address_group(context, addr_group_id)
+            if ag.project_id != fwr['tenant_id']:
+                LOG.debug("Address group %(ag)s does not belong to the "
+                          "tenant %(tenant)s",
+                          {'ag': addr_group_id, 'tenant': fwr['tenant_id']})
+                raise fwaas_exc.FirewallAddressGroupProjectConflict(ag_id=ag.project_id)
+
     def _validate_fwr_protocol_parameters(self, fwr):
         protocol = fwr['protocol']
         source_port = fwr['source_port']
@@ -273,6 +349,12 @@ class FirewallPluginDb(object):
         self._validate_fwr_port_range(min_port, max_port)
         return '%s:%s' % (min_port, max_port)
 
+    def _get_address_groups_from_rule(self, address_group):
+        ags = []
+        for ag in address_group:
+            ags.append(ag.address_group_id)
+        return ags
+
     def _make_firewall_rule_dict(self, firewall_rule, fields=None,
                                  policies=None):
         src_port_range = self._get_port_range_from_min_max_ports(
@@ -281,6 +363,12 @@ class FirewallPluginDb(object):
         dst_port_range = self._get_port_range_from_min_max_ports(
             firewall_rule['destination_port_range_min'],
             firewall_rule['destination_port_range_max'])
+
+        source_address_group_ids = self._get_address_groups_from_rule(
+            firewall_rule['source_address_group_ids'])
+        destination_address_group_ids = self._get_address_groups_from_rule(
+            firewall_rule['destination_address_group_ids'])
+
         res = {'id': firewall_rule['id'],
                'tenant_id': firewall_rule['tenant_id'],
                'name': firewall_rule['name'],
@@ -291,6 +379,8 @@ class FirewallPluginDb(object):
                'source_ip_address': firewall_rule['source_ip_address'],
                'destination_ip_address':
                firewall_rule['destination_ip_address'],
+               'source_address_group_ids': source_address_group_ids,
+               'destination_address_group_ids': destination_address_group_ids,
                'source_port': src_port_range,
                'destination_port': dst_port_range,
                'action': firewall_rule['action'],
@@ -333,7 +423,8 @@ class FirewallPluginDb(object):
                'admin_state_up': firewall_group_db['admin_state_up'],
                'ports': fwg_ports,
                'status': firewall_group_db['status'],
-               'shared': firewall_group_db['shared']}
+               'shared': firewall_group_db['shared']
+               }
         if hasattr(firewall_group_db.standard_attr, 'id'):
             res['standard_attr_id'] = firewall_group_db.standard_attr.id
             resource_extend.apply_funcs('firewall_groups', res,
@@ -345,23 +436,41 @@ class FirewallPluginDb(object):
                  .join(FirewallPolicyRuleAssociation)
                  .filter_by(firewall_policy_id=policy_id)
                  .order_by(FirewallPolicyRuleAssociation.position))
-        return [self._make_firewall_rule_dict(rule) for rule in query]
+        rules = []
+        address_groups = set()
+        for rule in query:
+            rules.append(self._make_firewall_rule_dict(rule))
+            for ag in rule.source_address_group_ids:
+                address_groups.add(ag.address_group_id)
+            for ag in rule.destination_address_group_ids:
+                address_groups.add(ag.address_group_id)
+        return rules, address_groups
 
     def make_firewall_group_dict_with_rules(self, context, firewall_group_id):
         firewall_group = self.get_firewall_group(context, firewall_group_id)
         ingress_policy_id = firewall_group['ingress_firewall_policy_id']
+        address_groups = set()
         if ingress_policy_id:
-            firewall_group['ingress_rule_list'] = (
+            ingress_rule_list, ingress_address_groups = (
                 self._get_policy_ordered_rules(context, ingress_policy_id))
+            firewall_group['ingress_rule_list'] = ingress_rule_list
+            address_groups.update(ingress_address_groups)
         else:
             firewall_group['ingress_rule_list'] = []
 
         egress_policy_id = firewall_group['egress_firewall_policy_id']
         if egress_policy_id:
-            firewall_group['egress_rule_list'] = (
+            egress_rule_list, egress_address_groups = (
                 self._get_policy_ordered_rules(context, egress_policy_id))
+            firewall_group['egress_rule_list'] = egress_rule_list
+            address_groups.update(egress_address_groups)
         else:
             firewall_group['egress_rule_list'] = []
+        address_group_dict = {}
+        for address_group in address_groups:
+            address_group_dict[address_group] = self._make_firewall_address_group_dict(
+                self._get_firewall_address_group(context, address_group))
+        firewall_group['address_groups'] = address_group_dict
         return firewall_group
 
     def _check_firewall_rule_conflict(self, fwr_db, fwp_db):
@@ -497,6 +606,7 @@ class FirewallPluginDb(object):
         fwr = firewall_rule
         self._validate_fwr_protocol_parameters(fwr)
         self._validate_fwr_src_dst_ip_version(fwr)
+        self._validate_fwr_address_groups(context, fwr)
 
         src_port_min, src_port_max = self._get_min_max_ports_from_range(
             fwr['source_port'])
@@ -519,6 +629,15 @@ class FirewallPluginDb(object):
                 action=fwr['action'],
                 enabled=fwr['enabled'],
                 shared=fwr['shared'])
+            for addr_group_id in fwr.get('source_address_group_ids', []):
+                fwr_db.source_address_group_ids.append(
+                    FirewallRuleSourceAddressGroupAssociation(
+                        address_group_id=addr_group_id))
+            for addr_group_id in fwr.get('destination_address_group_ids', []):
+                fwr_db.destination_address_group_ids.append(
+                    FirewallRuleDestinationAddressGroupAssociation(
+                        address_group_id=addr_group_id))
+
             context.session.add(fwr_db)
         return self._make_firewall_rule_dict(fwr_db)
 
@@ -530,6 +649,8 @@ class FirewallPluginDb(object):
 
         self._validate_fwr_protocol_parameters(fwr_db_updated)
         self._validate_fwr_src_dst_ip_version(fwr_db_updated)
+        self._validate_fwr_address_groups(context, fwr_db_updated)
+
         if 'source_port' in fwr:
             src_port_min, src_port_max = self._get_min_max_ports_from_range(
                 fwr['source_port'])
@@ -543,6 +664,36 @@ class FirewallPluginDb(object):
             fwr['destination_port_range_max'] = dst_port_max
             del fwr['destination_port']
         with db_api.CONTEXT_WRITER.using(context):
+            new_source_ids = set(fwr.pop('source_address_group_ids', []))
+            old_source_ids = {assoc.address_group_id for assoc in fwr_db.source_address_group_ids}
+            for addr_group_id in new_source_ids - old_source_ids:
+                assoc = FirewallRuleSourceAddressGroupAssociation(
+                    firewall_rule_id=fwr_db.id,
+                    address_group_id=addr_group_id
+                )
+                context.session.add(assoc)
+                fwr_db.source_address_group_ids.append(assoc)
+            for addr_group_id in old_source_ids - new_source_ids:
+                context.session.query(FirewallRuleSourceAddressGroupAssociation).filter(
+                    FirewallRuleSourceAddressGroupAssociation.firewall_rule_id == id,
+                    FirewallRuleSourceAddressGroupAssociation.address_group_id == addr_group_id
+                ).delete()
+
+            # Update destination_address_group_ids
+            new_dest_ids = set(fwr.pop('destination_address_group_ids', []))
+            old_dest_ids = {assoc.address_group_id for assoc in fwr_db.destination_address_group_ids}
+            for addr_group_id in new_dest_ids - old_dest_ids:
+                assoc = FirewallRuleDestinationAddressGroupAssociation(
+                    firewall_rule_id=fwr_db.id,
+                    address_group_id=addr_group_id
+                )
+                context.session.add(assoc)
+                fwr_db.destination_address_group_ids.append(assoc)
+            for addr_group_id in old_dest_ids - new_dest_ids:
+                context.session.query(FirewallRuleDestinationAddressGroupAssociation).filter(
+                    FirewallRuleDestinationAddressGroupAssociation.firewall_rule_id == id,
+                    FirewallRuleDestinationAddressGroupAssociation.address_group_id == addr_group_id
+                ).delete()
             fwr_db.update(fwr)
             # if the rule on a policy, fix audited flag
             fwp_ids = self.get_policies_with_rule(context, id)
@@ -557,6 +708,10 @@ class FirewallPluginDb(object):
             # make sure rule is not associated with any policy
             if self.get_policies_with_rule(context, id):
                 raise f_exc.FirewallRuleInUse(firewall_rule_id=id)
+            for assoc in fwr.source_address_group_ids:
+                context.session.delete(assoc)
+            for assoc in fwr.destination_address_group_ids:
+                context.session.delete(assoc)
             context.session.delete(fwr)
 
     def insert_rule(self, context, id, rule_info):
@@ -633,6 +788,19 @@ class FirewallPluginDb(object):
                 firewall_rule_id=fwrid)
             fwps = [entry.firewall_policy_id for entry in fw_pol_rule_qry]
         return fwps
+
+    def get_rules_with_address_group(self, context, address_group_id):
+        """Gets rules using a specific address_group"""
+        with db_api.CONTEXT_READER.using(context):
+            source_rule_qry = context.session.query(
+                FirewallRuleSourceAddressGroupAssociation).filter_by(
+                address_group_id=address_group_id)
+            source_rules = [entry.firewall_rule_id for entry in source_rule_qry]
+            dest_rule_qry = context.session.query(
+                FirewallRuleDestinationAddressGroupAssociation).filter_by(
+                address_group_id=address_group_id)
+            dest_rules = [entry.firewall_rule_id for entry in dest_rule_qry]
+        return source_rules + dest_rules
 
     def _set_rules_in_policy_rule_assoc(self, context, fwp_db, fwp):
         # Pull the rules and add it to policy - rule association table
@@ -1112,6 +1280,135 @@ class FirewallPluginDb(object):
         return model_query.get_collection(
             context, FirewallGroup, self._make_firewall_group_dict,
             filters=filters, fields=fields)
+
+    def create_firewall_address_group(self, context, address_group):
+        ag = address_group
+        with db_api.CONTEXT_WRITER.using(context):
+            ag_db = FirewallAddressGroup(
+                id=uuidutils.generate_uuid(),
+                project_id=context.project_id,
+                name=ag['name'],
+                description=ag['description'])
+            for ip in ag['addresses']:
+                try:
+                    self._validate_firewall_address_groups_address(context, ip)
+                    ag_ip = FirewallAddressGroupAddressAssociation(
+                        id=uuidutils.generate_uuid(),
+                        firewall_address_group_id=ag_db.id,
+                        address=ip['address'],
+                        ip_version=ip['ip_version'])
+                    context.session.add(ag_ip)
+                except (fwaas_exc.FirewallAddressGroupInvalidAddress,
+                        fwaas_exc.FirewallAddressGroupInvalidIpVersion) as e:
+                    raise e
+            context.session.add(ag_db)
+        return self._make_firewall_address_group_dict(ag_db)
+
+    def _validate_firewall_address_groups_address(self, context, address):
+        try:
+            ip_network = netaddr.IPNetwork(address['address'])
+        except netaddr.core.AddrFormatError:
+            raise fwaas_exc.FirewallAddressGroupInvalidAddress(ip_address=address['address'])
+        if not address['ip_version'] in [4, 6]:
+            raise fwaas_exc.FirewallAddressGroupInvalidIpVersion(ip_version=address['ip_version'])
+        if ip_network.version != address['ip_version']:
+            raise fwaas_exc.FirewallAddressGroupIpVersionConflict(
+                ip_version=address['ip_version'],
+                ip_address=address['address'])
+
+    def _make_firewall_address_group_dict(self, ag_db, fields=None):
+        address_list = []
+        for assoc in ag_db.addresses:
+            address_list.append({'address': assoc.address,
+                                 'ip_version': assoc.ip_version})
+
+        res = {'id': ag_db['id'],
+               'project_id': ag_db['project_id'],
+               'name': ag_db['name'],
+               'description': ag_db['description'],
+               'addresses': address_list}
+        return db_utils.resource_fields(res, fields)
+
+    def update_firewall_address_group(self, context, id, address_group):
+        ag = address_group
+        with db_api.CONTEXT_WRITER.using(context):
+            ag_db = self._get_firewall_address_group(context, id)
+
+            # Create a set of new addresses for easy comparison
+            new_addresses = set()
+            for addr in ag['addresses']:
+                try:
+                    self._validate_firewall_address_groups_address(context, addr)
+                    new_addresses.add((addr['address'], addr['ip_version']))
+                except (fwaas_exc.FirewallAddressGroupInvalidAddress,
+                        fwaas_exc.FirewallAddressGroupInvalidIpVersion) as e:
+                    raise e
+
+            # Create a set of existing addresses
+            existing_addresses = set((assoc.address, assoc.ip_version) for assoc in ag_db.addresses)
+
+            # Find addresses to add and to remove
+            addresses_to_add = new_addresses - existing_addresses
+            addresses_to_remove = existing_addresses - new_addresses
+
+            # Remove addresses
+            for address, ip_version in addresses_to_remove:
+                assoc = next(
+                    (assoc for assoc in ag_db.addresses if assoc.address == address and assoc.ip_version == ip_version),
+                    None)
+                if assoc:
+                    context.session.delete(assoc)
+
+            # Add new addresses
+            for address, ip_version in addresses_to_add:
+                assoc = FirewallAddressGroupAddressAssociation(
+                    firewall_address_group_id=ag_db.id,
+                    address=address,
+                    ip_version=ip_version
+                )
+                context.session.add(assoc)
+
+            # Update other fields of the address group
+            ag_db.name = ag.get('name', ag_db.name)
+            ag_db.description = ag.get('description', ag_db.description)
+
+        return self._make_firewall_address_group_dict(ag_db)
+
+    def delete_firewall_address_group(self, context, id):
+        # TODO (KGL): need to ensure that any addresses cascade delete when the group is deleted
+
+        with db_api.CONTEXT_WRITER.using(context):
+            if self.get_rules_with_address_group(context, id):
+                raise fwaas_exc.FirewallAddressGroupInUse(firewall_address_group_id=id)
+            ag_db = self._get_firewall_address_group(context, id)
+            context.session.delete(ag_db)
+
+    def get_firewall_address_group(self, context, id, fields=None):
+        ag = self._get_firewall_address_group(context, id)
+        return self._make_firewall_address_group_dict(ag, fields)
+
+    def get_firewall_address_groups(self, context, filters=None, fields=None):
+        return model_query.get_collection(
+            context, FirewallAddressGroup, self._make_firewall_address_group_dict,
+            filters=filters, fields=fields)
+
+    def _get_firewall_address_group(self, context, id):
+        try:
+            return model_query.query_with_hooks(
+                context, FirewallAddressGroup).filter_by(id=id).one()
+        except exc.NoResultFound:
+            raise fwaas_exc.FirewallAddressGroupNotFound(firewall_address_group_id=id)
+
+    def get_firewall_address_group_addresses(self, context, id):
+        with db_api.CONTEXT_READER.using(context):
+            ag_ip_qry = context.session.query(
+                FirewallAddressGroupAddressAssociation).filter_by(
+                firewall_address_group_id=id)
+            ag_ips = [entry.address for entry in ag_ip_qry]
+            if ag_ips:
+                return ag_ips
+            else:
+                return None
 
 
 def _is_default(fwg_db):

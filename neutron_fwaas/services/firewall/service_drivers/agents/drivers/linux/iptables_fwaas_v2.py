@@ -12,11 +12,14 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
+import logging
 
 from neutron.agent.linux import iptables_manager
+from neutron.agent.linux import ipset_manager
 from neutron.common import utils
 from neutron_lib import constants
 from neutron_lib.exceptions import firewall_v2 as fw_ext
+from oslo_config import cfg
 from oslo_log import log as logging
 
 from neutron_fwaas.services.firewall.service_drivers.agents.drivers import\
@@ -48,6 +51,9 @@ CHAIN_NAME_PREFIX = {constants.INGRESS_DIRECTION: 'i',
 """
 IPTABLES_DIR = {constants.INGRESS_DIRECTION: '-o',
                 constants.EGRESS_DIRECTION: '-i'}
+
+IPSET_DIR = {constants.INGRESS_DIRECTION: 'src',
+             constants.EGRESS_DIRECTION: 'dst'}
 IPV4 = 'ipv4'
 IPV6 = 'ipv6'
 IP_VER_TAG = {IPV4: 'v4',
@@ -67,6 +73,9 @@ class IptablesFwaasDriver(fwaas_base_v2.FwaasDriverBase):
         LOG.debug("Initializing fwaas iptables driver")
         self.pre_firewall = None
         self.conntrack = conntrack_base.load_and_init_conntrack_driver()
+        # TODO(KGL) change this back to: self.enable_ipset = cfg.CONF.SECURITYGROUP.enable_ipset and get this as a first class config option
+        self.enable_ipset = True
+        self.ipset = None
 
     def _get_intf_name(self, if_prefix, port_id):
         _name = "%s%s" % (if_prefix, port_id)
@@ -98,7 +107,8 @@ class IptablesFwaasDriver(fwaas_base_v2.FwaasDriverBase):
         namespace and a fip so this is provided back as a list - so in that
         scenario rules can be applied on both.
         """
-        if not ri.router.get('distributed'):
+        # if not ri.router.get('distributed'):
+        if not ri.router.get('distributed') or agent_mode == 'dvr':
             return [{'ipt': ri.iptables_manager,
                      'if_prefix': INTERNAL_DEV_PREFIX}]
         ipt_mgrs = []
@@ -127,7 +137,14 @@ class IptablesFwaasDriver(fwaas_base_v2.FwaasDriverBase):
                     self._remove_default_chains(ipt_mgr)
                     # apply the changes immediately (no defer in firewall path)
                     ipt_mgr.defer_apply_off()
+                    # Remove any ipsets created for this firewall
+                    if self.enable_ipset:
+                        self.ipset = ipset_manager.IpsetManager(namespace=ipt_mgr.namespace)
+                        for address_group_id in firewall['address_groups']:
+                            self.ipset.destroy(address_group_id, 'IPv4')
+                            self.ipset.destroy(address_group_id, 'IPv6')
             self.pre_firewall = None
+
         except (LookupError, RuntimeError):
             # catch known library exceptions and raise Fwaas generic exception
             LOG.exception("Failed to delete firewall: %s", fwid)
@@ -142,6 +159,9 @@ class IptablesFwaasDriver(fwaas_base_v2.FwaasDriverBase):
                 if self.pre_firewall:
                     self._remove_conntrack_updated_firewall(agent_mode,
                                     apply_list, self.pre_firewall, firewall)
+                    # Remove any ipsets created for this firewall
+                    if self.enable_ipset:
+                        self._remove_ipsets(agent_mode, apply_list, firewall, self.pre_firewall)
                 else:
                     self._remove_conntrack_new_firewall(agent_mode,
                                                     apply_list, firewall)
@@ -152,6 +172,28 @@ class IptablesFwaasDriver(fwaas_base_v2.FwaasDriverBase):
             # catch known library exceptions and raise Fwaas generic exception
             LOG.exception("Failed to update firewall: %s", firewall['id'])
             raise fw_ext.FirewallInternalDriverError(driver=FWAAS_DRIVER_NAME)
+
+    def _remove_ipsets(self, agent_mode, apply_list, firewall, pre_firewall):
+        """Remove ipsets that are no longer refrenced"""
+        for ri, router_fw_ports in apply_list:
+            ipt_if_prefix_list = self._get_ipt_mgrs_with_if_prefix(
+                agent_mode, ri)
+            for ipt_if_prefix in ipt_if_prefix_list:
+                ipt_mgr = ipt_if_prefix['ipt']
+                self.ipset = ipset_manager.IpsetManager(namespace=ipt_mgr.namespace)
+                for address_group_id in pre_firewall['address_groups']:
+                    if address_group_id not in firewall['address_groups']:
+                        ipv4 = False
+                        ipv6 = False
+                        for address, version in pre_firewall['address_groups'][address_group_id]['addresses']:
+                            if version == constants.IP_VERSION_6:
+                                ipv6 = True
+                            else:
+                                ipv4 = True
+                        if ipv4:
+                            self.ipset.destroy(address_group_id, 'IPv4', forced=True)
+                        if ipv6:
+                            self.ipset.destroy(address_group_id, 'IPv6', forced=True)
 
     def apply_default_policy(self, agent_mode, apply_list, firewall):
         LOG.debug('Applying firewall %(fw_id)s for tenant %(tid)s',
@@ -203,11 +245,65 @@ class IptablesFwaasDriver(fwaas_base_v2.FwaasDriverBase):
 
                 # create default 'DROP ALL' policy chain
                 self._add_default_policy_chain_v4v6(ipt_mgr)
+                # create ipsets for address groups in the policy
+                # must be done before creating the chain or iptables will blow up
+                if self.enable_ipset:
+                    self.ipset = ipset_manager.IpsetManager(namespace=ipt_mgr.namespace)
+                    self._setup_ipsets(firewall, ipt_mgr.namespace)
                 # create chain based on configured policy
                 self._setup_chains(firewall, ipt_if_prefix, router_fw_ports)
 
                 # apply the changes immediately (no defer in firewall path)
                 ipt_mgr.defer_apply_off()
+
+    def _setup_ipsets(self, firewall, nsid):
+        """Create ipsets for address groups in the policy"""
+        v4 = []
+        v6 = []
+        updated_address_groups = {}
+        for address_group_id, address_group in firewall['address_groups'].items():
+            updated_ips = []
+            for address in address_group['addresses']:
+                if address['address'] is None:
+                    continue
+                if address['ip_version'] == constants.IP_VERSION_4:
+                    v4.append((address['address'], None))
+                else:
+                    v6.append((address['address'], None))
+            if v4:
+                add_ips, del_ips = self.ipset.set_members(address_group_id,
+                                                          'IPv4',
+                                                          v4)
+                updated_ips.extend(add_ips)
+                updated_ips.extend(del_ips)
+            if v6:
+                add_ips, del_ips = self.ipset.set_members(address_group_id,
+                                                          'IPv6',
+                                                          v6)
+                updated_ips.extend(add_ips)
+                updated_ips.extend(del_ips)
+            if updated_ips:
+                updated_address_groups[address_group_id] = updated_ips
+        self._updated_ipset_conntrack_clear(firewall, updated_address_groups, nsid)
+
+    def _updated_ipset_conntrack_clear(self, firewall, updated_address_groups, nsid):
+        """Clear conntrack entries for updated address groups"""
+        for address_group_id, updated_ips in updated_address_groups.items():
+            updated_rules = []
+            rules = firewall['egress_rule_list'] + firewall['ingress_rule_list']
+            for rule in rules:
+                if rule.get('source_address_group_ids') and address_group_id in rule['source_address_group_ids']:
+                    for source_address in updated_ips:
+                        new_rule = rule.copy()
+                        new_rule['source_ip_address'] = source_address
+                        updated_rules.append(new_rule)
+                if rule.get('destination_address_group_ids') and address_group_id in rule[
+                    'destination_address_group_ids']:
+                    for destination_address in updated_ips:
+                        new_rule = rule.copy()
+                        new_rule['destination_ip_address'] = destination_address
+                        updated_rules.append(new_rule)
+            self.conntrack.delete_entries(updated_rules, nsid)
 
     def _get_chain_name(self, fwid, ver, direction):
         return '%s%s%s' % (CHAIN_NAME_PREFIX[direction],
@@ -243,7 +339,7 @@ class IptablesFwaasDriver(fwaas_base_v2.FwaasDriverBase):
         for rule in ingress_rule_list:
             if not rule['enabled']:
                 continue
-            iptbl_rule = self._convert_fwaas_to_iptables_rule(rule)
+            iptbl_rules = self._convert_fwaas_to_iptables_rule(rule)
             if rule['ip_version'] == constants.IP_VERSION_4:
                 ver = IPV4
                 table = ipt_mgr.ipv4['filter']
@@ -252,12 +348,13 @@ class IptablesFwaasDriver(fwaas_base_v2.FwaasDriverBase):
                 table = ipt_mgr.ipv6['filter']
             ichain_name = self._get_chain_name(
                 fwid, ver, constants.INGRESS_DIRECTION)
-            table.add_rule(ichain_name, iptbl_rule)
+            for iptbl_rule in iptbl_rules:
+                table.add_rule(ichain_name, iptbl_rule)
 
         for rule in egress_rule_list:
             if not rule['enabled']:
                 continue
-            iptbl_rule = self._convert_fwaas_to_iptables_rule(rule)
+            iptbl_rules = self._convert_fwaas_to_iptables_rule(rule)
             if rule['ip_version'] == constants.IP_VERSION_4:
                 ver = IPV4
                 table = ipt_mgr.ipv4['filter']
@@ -266,7 +363,8 @@ class IptablesFwaasDriver(fwaas_base_v2.FwaasDriverBase):
                 table = ipt_mgr.ipv6['filter']
             ochain_name = self._get_chain_name(
                 fwid, ver, constants.EGRESS_DIRECTION)
-            table.add_rule(ochain_name, iptbl_rule)
+            for iptbl_rule in iptbl_rules:
+                table.add_rule(ochain_name, iptbl_rule)
 
         self._enable_policy_chain(fwid, ipt_if_prefix, router_fw_ports)
 
@@ -323,8 +421,46 @@ class IptablesFwaasDriver(fwaas_base_v2.FwaasDriverBase):
                 i_rules = self._find_new_rules(pre_firewall, firewall)
                 r_rules = self._find_removed_rules(pre_firewall, firewall)
                 removed_conntrack_rules_list = ch_rules + i_rules + r_rules
+                exploded_ag_rules = []
+                for rule in removed_conntrack_rules_list:
+                    if rule.get('source_address_group_ids') or rule.get('destination_address_group_ids'):
+                        exploded_ag_rules.extend(self._explode_address_group_rules(rule, pre_firewall, firewall))
+                        removed_conntrack_rules_list.remove(rule)
+                if exploded_ag_rules:
+                    removed_conntrack_rules_list.extend(exploded_ag_rules)
                 self.conntrack.delete_entries(removed_conntrack_rules_list,
                                               ipt_mgr.namespace)
+
+    def _explode_address_group_rules(self, rule, pre_firewall, firewall):
+        exploded_rules = []
+        source_address_group_ids = rule.get('source_address_group_ids', [])
+        destination_address_group_ids = rule.get('destination_address_group_ids', [])
+
+        # Combine address groups from pre_firewall and firewall
+        combined_address_groups = {**pre_firewall['address_groups'], **firewall['address_groups']}
+
+        if source_address_group_ids and destination_address_group_ids:
+            for source_id in source_address_group_ids:
+                for source_address in combined_address_groups[source_id]['addresses']:
+                    for destination_id in destination_address_group_ids:
+                        for destination_address in combined_address_groups[destination_id]['addresses']:
+                            new_rule = rule.copy()
+                            new_rule['source_ip_address'] = source_address['address']
+                            new_rule['destination_ip_address'] = destination_address['address']
+                            exploded_rules.append(new_rule)
+        elif source_address_group_ids:
+            for source_id in source_address_group_ids:
+                for source_address in combined_address_groups[source_id]['addresses']:
+                    new_rule = rule.copy()
+                    new_rule['source_ip_address'] = source_address['address']
+                    exploded_rules.append(new_rule)
+        elif destination_address_group_ids:
+            for destination_id in destination_address_group_ids:
+                for destination_address in combined_address_groups[destination_id]['addresses']:
+                    new_rule = rule.copy()
+                    new_rule['destination_ip_address'] = destination_address['address']
+                    exploded_rules.append(new_rule)
+        return exploded_rules
 
     def _remove_default_chains(self, nsid):
         """Remove fwaas default policy chain."""
@@ -460,8 +596,44 @@ class IptablesFwaasDriver(fwaas_base_v2.FwaasDriverBase):
             self._add_rules_to_chain(ipt_mgr, IPV6, 'FORWARD', jump_rule)
 
     def _convert_fwaas_to_iptables_rule(self, rule):
+        rules = []
         action = FWAAS_TO_IPTABLE_ACTION_MAP[rule.get('action')]
 
+        # Check if both source_address_group_ids and destination_address_group_ids are defined
+        if rule.get('source_address_group_ids') and rule.get('destination_address_group_ids'):
+            for source_id in rule['source_address_group_ids']:
+                for destination_id in rule['destination_address_group_ids']:
+                    rules.append(self._create_rule(rule,
+                                                   action,
+                                                   source_id,
+                                                   destination_id,
+                                                   src_is_ag=True,
+                                                   dst_is_ag=True)
+                                 )
+        # Check if only source_address_group_ids is defined and a destination_ip_address is defined
+        elif rule.get('source_address_group_ids') and rule.get('destination_ip_address'):
+            for source_id in rule['source_address_group_ids']:
+                rules.append(self._create_rule(rule,
+                                               action,
+                                               source_id,
+                                               rule.get('destination_ip_address'),
+                                               src_is_ag=True)
+                             )
+        # Check if only destination_address_group_ids is defined and a source_ip_address is defined
+        elif rule.get('destination_address_group_ids') and rule.get('source_ip_address'):
+            for destination_id in rule['destination_address_group_ids']:
+                rules.append(self._create_rule(rule,
+                                               action,
+                                               rule.get('source_ip_address'),
+                                               destination_id, dst_is_ag=True)
+                             )
+        else:
+            rules.append(
+                self._create_rule(rule, action, rule.get('source_ip_address'), rule.get('destination_ip_address')))
+
+        return rules
+
+    def _create_rule(self, rule, action, source, destination, src_is_ag=False, dst_is_ag=False):
         # Output ordering is important here as it must exactly match what
         # is returned by iptables-save.  If not we risk unnecessarily removing
         # and readding rules.
@@ -469,9 +641,31 @@ class IptablesFwaasDriver(fwaas_base_v2.FwaasDriverBase):
 
         args += self._protocol_arg(rule.get('protocol'),
                                    rule.get('ip_version'))
-
-        args += self._ip_prefix_arg('s', rule.get('source_ip_address'))
-        args += self._ip_prefix_arg('d', rule.get('destination_ip_address'))
+        if self.enable_ipset:
+            etherype = 'IPv4'
+            if rule.get('ip_version') == constants.IP_VERSION_6:
+                etherype = 'IPv6'
+            if source is not None:
+                if src_is_ag:
+                    ipset_args = ['-m set', '--match-set',
+                                  self.ipset.get_name(source, etherype),
+                                  'src']
+                    args += ipset_args
+                else:
+                    args += self._ip_prefix_arg('s', source)
+            if destination is not None:
+                if dst_is_ag:
+                    ipset_args = ['-m set', '--match-set',
+                                  self.ipset.get_name(destination, etherype),
+                                  'dst']
+                    args += ipset_args
+                else:
+                    args += self._ip_prefix_arg('d', destination)
+        else:
+            if source is not None:
+                args += self._ip_prefix_arg('s', source)
+            if destination is not None:
+                args += self._ip_prefix_arg('d', destination)
 
         # iptables adds '-m protocol' when any source
         # or destination port number is specified
@@ -482,7 +676,6 @@ class IptablesFwaasDriver(fwaas_base_v2.FwaasDriverBase):
         args += self._port_arg('sport',
                                rule.get('protocol'),
                                rule.get('source_port'))
-
         args += self._port_arg('dport',
                                rule.get('protocol'),
                                rule.get('destination_port'))

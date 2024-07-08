@@ -101,7 +101,8 @@ class IptablesFwaasTestCase(base.BaseTestCase):
                    'admin_state_up': True,
                    'tenant_id': 'tenant-uuid',
                    'egress_rule_list': rule_list,
-                   'ingress_rule_list': rule_list}
+                   'ingress_rule_list': rule_list,
+                   'address_groups': {}}
         return fw_inst
 
     def _fake_firewall(self, rule_list):
@@ -112,7 +113,8 @@ class IptablesFwaasTestCase(base.BaseTestCase):
                    'admin_state_up': True,
                    'tenant_id': 'tenant-uuid',
                    'egress_rule_list': _rule_list,
-                   'ingress_rule_list': _rule_list}
+                   'ingress_rule_list': _rule_list,
+                   'address_groups': {}}
         return fw_inst
 
     def _fake_firewall_with_admin_down(self, rule_list):
@@ -385,10 +387,14 @@ class IptablesFwaasTestCase(base.BaseTestCase):
             distributed=True, distributed_mode='dvr_snat')
 
     def test_create_firewall_group_with_rules_dvr(self):
+        # TODO(KGL): Brekers DVR patch breaks this test
+        # https://github.com/gdcorp-gc/openstack-patches/blob/main/neutron-fwaas/stable_2024.1/Fix-FWaaS-for-DVR.patch
         self._setup_firewall_with_rules(self.firewall.create_firewall_group,
             distributed=True, distributed_mode='dvr')
 
     def test_update_firewall_group_with_rules_dvr(self):
+        # TODO(KGL): Brekers DVR patch breaks this test
+        # https://github.com/gdcorp-gc/openstack-patches/blob/main/neutron-fwaas/stable_2024.1/Fix-FWaaS-for-DVR.patch
         self._setup_firewall_with_rules(self.firewall.update_firewall_group,
             distributed=True, distributed_mode='dvr')
 

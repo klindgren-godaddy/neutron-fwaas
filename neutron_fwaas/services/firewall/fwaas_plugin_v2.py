@@ -311,6 +311,35 @@ class FirewallPluginV2(Firewallv2PluginBase):
                         "firewall group %s and skip association", port_id,
                         default_fwg['id'])
 
+    # Firewall Address Group
+    @log_helpers.log_method_call
+    @db_api.CONTEXT_WRITER
+    def create_firewall_address_group(self, context, firewall_address_group):
+        firewall_address_group = firewall_address_group['firewall_address_group']
+        return self.driver.create_firewall_address_group(context,
+                                                         firewall_address_group)
+
+    @log_helpers.log_method_call
+    @db_api.CONTEXT_WRITER
+    def delete_firewall_address_group(self, context, id):
+        self.driver.delete_firewall_address_group(context, id)
+
+    @log_helpers.log_method_call
+    @db_api.CONTEXT_WRITER
+    def update_firewall_address_group(self, context, id, firewall_address_group):
+        firewall_address_group = firewall_address_group['firewall_address_group']
+        return self.driver.update_firewall_address_group(context, id, firewall_address_group)
+
+    @log_helpers.log_method_call
+    @db_api.CONTEXT_READER
+    def get_firewall_address_group(self, context, id, fields=None):
+        return self.driver.get_firewall_address_group(context, id, fields=fields)
+
+    @log_helpers.log_method_call
+    @db_api.CONTEXT_WRITER
+    def get_firewall_address_groups(self, context, filters=None, fields=None):
+        return self.driver.get_firewall_address_groups(context, filters, fields)
+
     # Firewall Group
     @log_helpers.log_method_call
     @db_api.CONTEXT_WRITER

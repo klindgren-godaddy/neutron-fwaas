@@ -57,6 +57,8 @@ class FirewallPluginV2TestCase(test_db_plugin.NeutronDbPluginV2TestCase):
     IP_VERSION = 4
     SOURCE_IP_ADDRESS_RAW = '1.1.1.1'
     DESTINATION_IP_ADDRESS_RAW = '2.2.2.2'
+    SOURCE_ADDRESS_GROUP_IDS = []
+    DESTINATION_ADDRESS_GROUP_IDS = []
     SOURCE_PORT = '55000:56000'
     DESTINATION_PORT = '56000:57000'
     ACTION = 'allow'
@@ -179,6 +181,8 @@ class FirewallPluginV2TestCase(test_db_plugin.NeutronDbPluginV2TestCase):
                  'ip_version': self.IP_VERSION,
                  'source_ip_address': self.SOURCE_IP_ADDRESS_RAW,
                  'destination_ip_address': self.DESTINATION_IP_ADDRESS_RAW,
+                 'source_address_group_ids': self.SOURCE_ADDRESS_GROUP_IDS,
+                 'destination_address_group_ids': self.DESTINATION_ADDRESS_GROUP_IDS,
                  'source_port': self.SOURCE_PORT,
                  'destination_port': self.DESTINATION_PORT,
                  'action': self.ACTION,
@@ -260,17 +264,23 @@ class FirewallPluginV2TestCase(test_db_plugin.NeutronDbPluginV2TestCase):
 
     def _create_firewall_rule(self, fmt, name, shared, protocol,
                               ip_version, source_ip_address,
-                              destination_ip_address, source_port,
-                              destination_port, action, enabled,
-                              expected_res_status=None, as_admin=False,
-                              **kwargs):
+                              destination_ip_address,
+                              source_address_group_ids,
+                              destination_address_group_ids,
+                              source_port, destination_port, action,
+                              enabled, expected_res_status=None,
+                              as_admin=False, **kwargs):
         tenant_id = kwargs.get('tenant_id', self._tenant_id)
         data = {'firewall_rule': {'name': name,
                                   'protocol': protocol,
                                   'ip_version': ip_version,
                                   'source_ip_address': source_ip_address,
+                                  'source_address_group_ids':
+                                  source_address_group_ids,
                                   'destination_ip_address':
                                   destination_ip_address,
+                                  'destination_address_group_ids':
+                                  destination_address_group_ids,
                                   'source_port': source_port,
                                   'destination_port': destination_port,
                                   'action': action,
@@ -297,15 +307,21 @@ class FirewallPluginV2TestCase(test_db_plugin.NeutronDbPluginV2TestCase):
                       shared=SHARED, protocol=PROTOCOL, ip_version=IP_VERSION,
                       source_ip_address=SOURCE_IP_ADDRESS_RAW,
                       destination_ip_address=DESTINATION_IP_ADDRESS_RAW,
+                      source_address_group_ids=SOURCE_ADDRESS_GROUP_IDS,
+                      destination_address_group_ids=DESTINATION_ADDRESS_GROUP_IDS,
                       source_port=SOURCE_PORT,
                       destination_port=DESTINATION_PORT,
                       action=ACTION, enabled=ENABLED,
-                      do_delete=True, as_admin=False, **kwargs):
+                      do_delete=True, as_admin=False,
+                      **kwargs):
+
         if not fmt:
             fmt = self.fmt
         res = self._create_firewall_rule(fmt, name, shared, protocol,
                                          ip_version, source_ip_address,
                                          destination_ip_address,
+                                         source_address_group_ids,
+                                         destination_address_group_ids,
                                          source_port, destination_port,
                                          action, enabled, as_admin=as_admin,
                                          **kwargs)

@@ -360,7 +360,8 @@ class IptablesLoggingDriver(log_ext.LoggingDriver):
 
     def _get_if_prefix(self, agent_mode, router):
         """Get the if prefix from router"""
-        if not router.router.get('distributed'):
+        if not router.router.get('distributed') or agent_mode == 'dvr':
+        # if not router.router.get('distributed'):
             return INTERNAL_DEV_PREFIX
 
         if agent_mode == 'dvr_snat':

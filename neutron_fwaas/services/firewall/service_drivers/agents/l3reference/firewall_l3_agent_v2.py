@@ -155,12 +155,13 @@ class FWaaSL3AgentExtension(l3_extension.L3AgentExtension):
             else:
                 fwg_port_ids = firewall_group['add-port-ids']
         if not require_new_plugin and not fwg_port_ids:
-            routers = self.agent_api.get_routers_in_project(
-                    firewall_group['tenant_id'])
-            for router in routers:
-                if router.router['tenant_id'] == firewall_group['tenant_id']:
-                    fwg_port_ids.extend([p['id'] for p in
-                            router.internal_ports])
+            if self.agent_api is not None:
+                routers = self.agent_api.get_routers_in_project(
+                        firewall_group['tenant_id'])
+                for router in routers:
+                    if router.router['tenant_id'] == firewall_group['tenant_id']:
+                        fwg_port_ids.extend([p['id'] for p in
+                                router.internal_ports])
 
         # Return in-namespace port objects.
         return self._get_in_ns_ports(fwg_port_ids)

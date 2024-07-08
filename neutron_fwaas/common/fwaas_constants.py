@@ -40,3 +40,6 @@ DELETE_PORT = 'delete_port'
 FIREWALL_GROUP = 'firewall_group'
 FIREWALL_RULE = 'firewall_rule'
 FIREWALL_POLICY = 'firewall_policy'
+
+# Firewall Address Groups
+FIREWALL_ADDRESS_GROUP = 'firewall_address_group'

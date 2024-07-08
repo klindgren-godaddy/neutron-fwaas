@@ -350,6 +350,15 @@ class FirewallAgentDriver(driver_api.FirewallDriverDB,
         for firewall_policy_id in firewall_policy_ids:
             self._rpc_update_firewall_policy(context, firewall_policy_id)
 
+    def update_firewall_address_group_postcommit(self, context, address_group):
+        firewall_rule_ids = self.firewall_db.get_rules_with_address_group(
+            context, address_group['id'])
+        for firewall_rule_id in firewall_rule_ids:
+            firewall_policy_ids = self.firewall_db.get_policies_with_rule(
+                context, firewall_rule_id)
+            for firewall_policy_id in firewall_policy_ids:
+                self._rpc_update_firewall_policy(context, firewall_policy_id)
+
     def insert_rule_postcommit(self, context, policy_id, rule_info):
         self._rpc_update_firewall_policy(context, policy_id)
 

@@ -51,6 +51,27 @@ class FirewallDriver(object, metaclass=abc.ABCMeta):
     def is_supported_l3_port(self, port):
         return False
 
+ # Firewall Address Group
+    @abc.abstractmethod
+    def create_firewall_address_group(self, context, address_group):
+        pass
+
+    @abc.abstractmethod
+    def delete_firewall_address_group(self, context, id):
+        pass
+
+    @abc.abstractmethod
+    def update_firewall_address_group(self, context, id, address_group):
+        pass
+
+    @abc.abstractmethod
+    def get_firewall_address_group(self, context, id, fields=None):
+        pass
+
+    @abc.abstractmethod
+    def get_firewall_address_groups(self, context, filters=None, fields=None):
+        pass
+
     # Firewall Group
     @abc.abstractmethod
     def create_firewall_group(self, context, firewall_group):
@@ -140,6 +161,82 @@ class FirewallDriverDBMixin(FirewallDriver, metaclass=abc.ABCMeta):
         context.session.query(resource_type).\
                               filter_by(id=resource_dict['id']).\
                               update({'status': resource_dict['status']})
+
+    # Firewall Address Group
+    def create_firewall_address_group(self, context, address_group):
+        request_body = address_group
+        with db_api.CONTEXT_WRITER.using(context):
+            address_group = self.firewall_db.create_firewall_address_group(
+                context, address_group)
+            self.create_firewall_address_group_precommit(context, address_group)
+        self.create_firewall_address_group_postcommit(context, address_group)
+
+        payload = events.DBEventPayload(context=context,
+                                        resource_id=address_group['id'],
+                                        request_body=request_body,
+                                        states=(address_group,))
+        registry.publish(
+            const.FIREWALL_ADDRESS_GROUP, events.AFTER_CREATE, self,
+            payload=payload)
+        return address_group
+
+    @abc.abstractmethod
+    def create_firewall_address_group_precommit(self, context, address_group):
+        pass
+
+    @abc.abstractmethod
+    def create_firewall_address_group_postcommit(self, context, address_group):
+        pass
+
+    def delete_firewall_address_group(self, context, id):
+        address_group = self.firewall_db.get_firewall_address_group(context, id)
+        self.delete_firewall_address_group_precommit(context, address_group)
+        self.firewall_db.delete_firewall_address_group(context, id)
+        self.delete_firewall_address_group_postcommit(context, address_group)
+
+        payload = events.DBEventPayload(context=context,
+                                        resource_id=id,
+                                        states=(address_group,))
+        registry.publish(
+            const.FIREWALL_ADDRESS_GROUP, events.AFTER_DELETE, self,
+            payload=payload)
+
+    @abc.abstractmethod
+    def delete_firewall_address_group_precommit(self, context, address_group):
+        pass
+
+    @abc.abstractmethod
+    def delete_firewall_address_group_postcommit(self, context, address_group):
+        pass
+
+    def get_firewall_address_group(self, context, id, fields=None):
+        return self.firewall_db.get_firewall_address_group(context, id, fields=fields)
+
+    def get_firewall_address_groups(self, context, filters=None, fields=None):
+        return self.firewall_db.get_firewall_address_groups(context, filters, fields)
+
+    def update_firewall_address_group(self, context, id, address_group):
+        old_address_group = self.firewall_db.get_firewall_address_group(context, id)
+        new_address_group = copy.deepcopy(old_address_group)
+
+        new_address_group.update(address_group)
+        address_group = self.firewall_db.update_firewall_address_group(context, id, address_group)
+        self.update_firewall_address_group_precommit(context, old_address_group, new_address_group)
+        payload = events.DBEventPayload(context=context,
+                                        resource_id=id,
+                                        states=(address_group,))
+        self.update_firewall_address_group_postcommit(context, new_address_group)
+        registry.publish(
+            const.FIREWALL_ADDRESS_GROUP, events.AFTER_UPDATE, self, payload=payload)
+        return address_group
+
+    @abc.abstractmethod
+    def update_firewall_address_group_precommit(self, context, old_address_group, new_address_group):
+        pass
+
+    @abc.abstractmethod
+    def update_firewall_address_group_postcommit(self, context, address_group):
+        pass
 
     # Firewall Group
     def create_firewall_group(self, context, firewall_group):
@@ -440,6 +537,24 @@ class FirewallDriverDB(FirewallDriverDBMixin):
     Any exception raised during a precommit method will result in not having
     related records in the databases.
     """
+    # Firewall Address Group
+    def update_firewall_address_group_precommit(self, context, old_address_group, new_address_group):
+        pass
+
+    def update_firewall_address_group_postcommit(self, context, address_group):
+        pass
+
+    def delete_firewall_address_group_precommit(self, context, address_group):
+        pass
+
+    def delete_firewall_address_group_postcommit(self, context, address_group):
+        pass
+
+    def create_firewall_address_group_precommit(self, context, address_group):
+        pass
+
+    def create_firewall_address_group_postcommit(self, context, address_group):
+        pass
 
     # Firewall Group
     def create_firewall_group_precommit(self, context, firewall_group):

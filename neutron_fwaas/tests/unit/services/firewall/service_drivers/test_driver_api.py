@@ -53,6 +53,13 @@ class FireWallDriverDBMixinTestCase(test_fwaas_plugin_v2.
             'tenant_id': 'fake_tenant_id',
             'status': 'CREATED'
         }
+        self.fake_fwag = {
+            'id': 'fake_fwag_id',
+            'name': 'fake_fwag_name',
+            'tenant_id': 'fake_tenant_id',
+            'description': 'fake_fwag_description',
+            'addresses': [],
+        }
 
         self.fake_fwp = {
             'id': 'fake_fwp_id',
@@ -66,6 +73,65 @@ class FireWallDriverDBMixinTestCase(test_fwaas_plugin_v2.
             'firewall_policy_id': [],
             'project_id': 'fake_project_id'
         }
+
+    # Test Firewall Address Group
+    def test_create_firewall_address_group(self):
+
+        with mock.patch.object(self.firewall_db, 'create_firewall_address_group',
+                               return_value=self.fake_fwg):
+            self.driver_api.create_firewall_address_group(self.ctx,
+                                                          self.fake_fwg)
+            self.mock_registry_publish.\
+                assert_called_with(const.FIREWALL_ADDRESS_GROUP,
+                                   events.AFTER_CREATE,
+                                   self.driver_api,
+                                   payload=self.m_payload)
+
+    def test_delete_firewall_address_group(self):
+
+        with mock.patch.object(self.firewall_db, 'get_firewall_address_group',
+                            return_value=self.fake_fwag):
+            self.driver_api.delete_firewall_address_group(self.ctx,
+                                                        'fake_fwg_id')
+            self.mock_registry_publish.\
+                assert_called_with(const.FIREWALL_ADDRESS_GROUP,
+                                events.AFTER_DELETE,
+                                self.driver_api,
+                                payload=self.m_payload)
+
+
+    def test_update_firewall_address_group(self):
+
+        fake_fwg_delta = {
+            'ingress_firewall_policy_id': 'fake_ifwp_delta_id',
+            'egress_firewall_policy_id': 'fake_efwp_delta_id',
+            'ports': [],
+        }
+
+        old_fake_fwg = {
+            'id': 'fake_fwg_id',
+            'ingress_firewall_policy_id': 'old_fake_ifwp_id',
+            'egress_firewall_policy_id': 'old_fake_efwp_id',
+            'ports': [],
+            'tenant_id': 'fake_tenant_id',
+            'status': 'CREATED'
+        }
+
+        with mock.patch.object(self.firewall_db, 'get_firewall_address_group',
+                            return_value=old_fake_fwg):
+            new_fake_fwg = copy.deepcopy(old_fake_fwg)
+            new_fake_fwg.update(fake_fwg_delta)
+
+            with mock.patch.object(self.firewall_db, 'update_firewall_address_group',
+                                return_value=new_fake_fwg):
+                self.driver_api.\
+                    update_firewall_address_group(self.ctx, 'fake_fwg_id',
+                                        fake_fwg_delta)
+                self.mock_registry_publish.\
+                    assert_called_with(const.FIREWALL_ADDRESS_GROUP,
+                                    events.AFTER_UPDATE,
+                                    self.driver_api,
+                                    payload=self.m_payload)
 
     # Test Firewall Group
     def test_create_firewall_group(self):
@@ -294,3 +360,61 @@ class FireWallDriverDBMixinTestCase(test_fwaas_plugin_v2.
                                    events.AFTER_UPDATE,
                                    self.driver_api,
                                    payload=self.m_payload)
+
+    def test_create_firewall_address_group(self):
+        with mock.patch.object(self.firewall_db, 'create_firewall_address_group',
+                               return_value=self.fake_fwg):
+            self.driver_api.create_firewall_address_group(self.ctx,
+                                                          self.fake_fwg)
+            self.mock_registry_publish.\
+                assert_called_with(const.FIREWALL_ADDRESS_GROUP,
+                                   events.AFTER_CREATE,
+                                   self.driver_api,
+                                   payload=self.m_payload)
+
+    def test_delete_firewall_address_group(self):
+        with mock.patch.object(self.firewall_db, 'get_firewall_address_group',
+                               return_value=self.fake_fwag):
+            with mock.patch.object(self.firewall_db,
+                                   'delete_firewall_address_group',
+                                   return_value=None):
+                self.driver_api.delete_firewall_address_group(self.ctx,
+                                                              'fake_fwg_id')
+                self.mock_registry_publish.\
+                    assert_called_with(const.FIREWALL_ADDRESS_GROUP,
+                                       events.AFTER_DELETE,
+                                       self.driver_api,
+                                       payload=self.m_payload)
+
+    def test_update_firewall_address_group(self):
+        # Test update_firewall_address_group
+        fake_fwg_delta = {
+            'ingress_firewall_policy_id': 'fake_ifwp_delta_id',
+            'egress_firewall_policy_id': 'fake_efwp_delta_id',
+            'ports': [],
+        }
+
+        old_fake_fwg = {
+            'id': 'fake_fwg_id',
+            'ingress_firewall_policy_id': 'old_fake_ifwp_id',
+            'egress_firewall_policy_id': 'old_fake_efwp_id',
+            'ports': [],
+            'tenant_id': 'fake_tenant_id',
+            'status': 'CREATED'
+        }
+
+        with mock.patch.object(self.firewall_db, 'get_firewall_address_group',
+                               return_value=old_fake_fwg):
+            new_fake_fwg = copy.deepcopy(old_fake_fwg)
+            new_fake_fwg.update(fake_fwg_delta)
+
+            with mock.patch.object(self.firewall_db, 'update_firewall_address_group',
+                                   return_value=new_fake_fwg):
+                self.driver_api.\
+                    update_firewall_address_group(self.ctx, 'fake_fwg_id',
+                                          fake_fwg_delta)
+                self.mock_registry_publish.\
+                    assert_called_with(const.FIREWALL_ADDRESS_GROUP,
+                                       events.AFTER_UPDATE,
+                                       self.driver_api,
+                                       payload=self.m_payload)
